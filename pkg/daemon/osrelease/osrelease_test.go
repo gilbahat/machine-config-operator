@@ -312,3 +312,20 @@ OPENSHIFT_VERSION="5.0"`
 		})
 	}
 }
+
+func TestNewAIXOperatingSystem(t *testing.T) {
+	os := NewAIXOperatingSystem("7.3")
+	assert.True(t, os.IsAIX())
+	assert.False(t, os.IsCoreOSVariant())
+	assert.False(t, os.IsLikeRHEL())
+	assert.False(t, os.IsEL())
+	assert.False(t, os.IsLikeTraditionalRHEL7())
+	assert.Equal(t, "7.3", os.BaseVersion())
+	assert.Equal(t, "AIX", os.ToPrometheusLabel())
+	assert.Equal(t, "IBM AIX 7.3", os.OSRelease().PRETTY_NAME)
+
+	rhcos, err := LoadOSRelease("ID=rhcos\nVERSION_ID=9.6\n", "")
+	if err == nil {
+		assert.False(t, rhcos.IsAIX())
+	}
+}

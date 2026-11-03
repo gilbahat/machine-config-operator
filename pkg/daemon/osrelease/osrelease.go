@@ -23,6 +23,7 @@ const (
 	rhel   string = "rhel"
 	rhcos  string = "rhcos"
 	scos   string = "scos"
+	aix    string = "aix"
 )
 
 // OS Pretty Names
@@ -141,6 +142,27 @@ func (os OperatingSystem) IsSCOS() bool {
 	return os.id == scos
 }
 
+// IsAIX is true if the OS is IBM AIX.
+func (os OperatingSystem) IsAIX() bool {
+	return os.id == aix
+}
+
+// NewAIXOperatingSystem describes an AIX host; version is the release, e.g. "7.3".
+// AIX has no os-release file, so the fields are synthesized from oslevel.
+func NewAIXOperatingSystem(version string) OperatingSystem {
+	return OperatingSystem{
+		id:      aix,
+		version: version,
+		osrelease: osrelease.OSRelease{
+			ID:          aix,
+			NAME:        "AIX",
+			PRETTY_NAME: "IBM AIX " + version,
+			VERSION:     version,
+			VERSION_ID:  version,
+		},
+	}
+}
+
 // IsCoreOSVariant is true if the OS is FCOS or a derivative (ostree+Ignition)
 // which includes SCOS and RHCOS.
 func (os OperatingSystem) IsCoreOSVariant() bool {
@@ -151,6 +173,10 @@ func (os OperatingSystem) IsCoreOSVariant() bool {
 // IsLikeTraditionalRHEL7 is true if the OS is traditional RHEL7 or CentOS7:
 // yum based + kickstart/cloud-init (not Ignition).
 func (os OperatingSystem) IsLikeTraditionalRHEL7() bool {
+	// AIX 7.x versions would otherwise match below.
+	if os.IsAIX() {
+		return false
+	}
 	// Today nothing else is going to show up with a version ID of 7
 	if len(os.version) > 2 {
 		return strings.HasPrefix(os.version, "7.")
@@ -166,11 +192,16 @@ func (os OperatingSystem) ToPrometheusLabel() string {
 
 // GetHostRunningOS reads os-release to generate the OperatingSystem data.
 func GetHostRunningOS() (OperatingSystem, error) {
-	return newOperatingSystem(EtcOSReleasePath, LibOSReleasePath)
+	return GetHostRunningOSFromRoot("/")
 }
 
 // GetHostRunningOSFromRoot reads the os-release data from an alternative root
 func GetHostRunningOSFromRoot(root string) (OperatingSystem, error) {
+	return hostRunningOSFromRoot(root)
+}
+
+// getOSFromOSRelease reads the os-release files under root.
+func getOSFromOSRelease(root string) (OperatingSystem, error) {
 	etcPath := filepath.Join(root, EtcOSReleasePath)
 	libPath := filepath.Join(root, LibOSReleasePath)
 	return newOperatingSystem(etcPath, libPath)
