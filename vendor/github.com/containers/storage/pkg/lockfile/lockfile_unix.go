@@ -3,6 +3,7 @@
 package lockfile
 
 import (
+	"io"
 	"time"
 
 	"github.com/containers/storage/pkg/system"
@@ -80,7 +81,7 @@ func lockHandle(fd fileHandle, lType lockType, nonblocking bool) error {
 	}
 	lk := unix.Flock_t{
 		Type:   int16(fType),
-		Whence: int16(unix.SEEK_SET),
+		Whence: int16(io.SeekStart), // unix.SEEK_SET is not defined on AIX
 		Start:  0,
 		Len:    0,
 	}

@@ -1,0 +1,104 @@
+diff --git a/vendor/github.com/containers/storage/pkg/fileutils/exists_aix.go b/vendor/github.com/containers/storage/pkg/fileutils/exists_aix.go
+new file mode 100644
+index 00000000..edf7063e
+--- /dev/null
++++ b/vendor/github.com/containers/storage/pkg/fileutils/exists_aix.go
+@@ -0,0 +1,19 @@
++//go:build aix
++
++package fileutils
++
++import "os"
++
++// Exists checks whether a file or directory exists at the given path.
++// If the path is a symlink, the symlink is followed.
++func Exists(path string) error {
++	_, err := os.Stat(path)
++	return err
++}
++
++// Lexists checks whether a file or directory exists at the given path.
++// If the path is a symlink, the symlink itself is checked.
++func Lexists(path string) error {
++	_, err := os.Lstat(path)
++	return err
++}
+diff --git a/vendor/github.com/containers/storage/pkg/fileutils/exists_unix.go b/vendor/github.com/containers/storage/pkg/fileutils/exists_unix.go
+index 04cfafcd..7237dbd4 100644
+--- a/vendor/github.com/containers/storage/pkg/fileutils/exists_unix.go
++++ b/vendor/github.com/containers/storage/pkg/fileutils/exists_unix.go
+@@ -1,4 +1,4 @@
+-//go:build !windows && !freebsd
++//go:build !windows && !freebsd && !aix
+ 
+ package fileutils
+ 
+diff --git a/vendor/github.com/containers/storage/pkg/lockfile/lockfile_unix.go b/vendor/github.com/containers/storage/pkg/lockfile/lockfile_unix.go
+index 885f2f88..99557a5c 100644
+--- a/vendor/github.com/containers/storage/pkg/lockfile/lockfile_unix.go
++++ b/vendor/github.com/containers/storage/pkg/lockfile/lockfile_unix.go
+@@ -3,6 +3,7 @@
+ package lockfile
+ 
+ import (
++	"io"
+ 	"time"
+ 
+ 	"github.com/containers/storage/pkg/system"
+@@ -80,7 +81,7 @@ func lockHandle(fd fileHandle, lType lockType, nonblocking bool) error {
+ 	}
+ 	lk := unix.Flock_t{
+ 		Type:   int16(fType),
+-		Whence: int16(unix.SEEK_SET),
++		Whence: int16(io.SeekStart), // unix.SEEK_SET is not defined on AIX
+ 		Start:  0,
+ 		Len:    0,
+ 	}
+diff --git a/vendor/github.com/containers/storage/pkg/system/stat_aix.go b/vendor/github.com/containers/storage/pkg/system/stat_aix.go
+new file mode 100644
+index 00000000..6239965c
+--- /dev/null
++++ b/vendor/github.com/containers/storage/pkg/system/stat_aix.go
+@@ -0,0 +1,20 @@
++//go:build aix
++
++package system
++
++import "syscall"
++
++// fromStatT converts a syscall.Stat_t type to a system.Stat_t type.
++// AIX syscall.Stat_t.Mtim is StTimespec_t {Sec int64, Nsec int32}, not
++// syscall.Timespec, so it is converted field by field.
++func fromStatT(s *syscall.Stat_t) (*StatT, error) {
++	return &StatT{
++		size: s.Size,
++		mode: uint32(s.Mode),
++		uid:  s.Uid,
++		gid:  s.Gid,
++		rdev: uint64(s.Rdev),
++		mtim: syscall.Timespec{Sec: s.Mtim.Sec, Nsec: int64(s.Mtim.Nsec)},
++		dev:  uint64(s.Dev),
++	}, nil
++}
+diff --git a/vendor/github.com/godbus/dbus/v5/transport_aix.go b/vendor/github.com/godbus/dbus/v5/transport_aix.go
+new file mode 100644
+index 00000000..1bba0d6b
+--- /dev/null
++++ b/vendor/github.com/godbus/dbus/v5/transport_aix.go
+@@ -0,0 +1,6 @@
++package dbus
++
++func (t *unixTransport) SendNullByte() error {
++	_, err := t.Write([]byte{0})
++	return err
++}
+diff --git a/vendor/github.com/moby/sys/user/lookup_unix.go b/vendor/github.com/moby/sys/user/lookup_unix.go
+index 4540747d..e66df764 100644
+--- a/vendor/github.com/moby/sys/user/lookup_unix.go
++++ b/vendor/github.com/moby/sys/user/lookup_unix.go
+@@ -1,4 +1,4 @@
+-//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
++//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris || aix
+ 
+ package user
+ 

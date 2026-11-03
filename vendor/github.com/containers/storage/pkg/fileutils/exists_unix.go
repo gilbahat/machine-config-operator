@@ -1,4 +1,4 @@
-//go:build !windows && !freebsd
+//go:build !windows && !freebsd && !aix
 
 package fileutils
 
