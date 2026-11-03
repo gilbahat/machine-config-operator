@@ -466,8 +466,8 @@ func getPoolUpdateLine(pool *mcfgv1.MachineConfigPool, mosc *mcfgv1.MachineOSCon
 
 // isNodeManaged checks whether the MCD has ever run on a node
 func isNodeManaged(node *corev1.Node) bool {
-	if helpers.IsWindows(node) {
-		klog.V(4).Infof("Node %v is a windows node so won't be managed by MCO", node.Name)
+	if helpers.IsNonLinux(node) {
+		klog.V(4).Infof("Node %v is a %s node so won't be managed by MCO", node.Name, node.Labels[helpers.OSLabel])
 		return false
 	}
 	if node.Annotations == nil {

@@ -1027,7 +1027,7 @@ func (ctrl *Controller) deleteNode(obj interface{}) {
 // getPoolsForNode chooses the MachineConfigPools that should be used for a given node.
 // It disambiguates in the case where e.g. a node has both master/worker roles applied,
 // and where a custom role may be used. It returns a slice of all the pools the node belongs to.
-// It also ignores the Windows nodes.
+// It also ignores non-Linux (e.g. Windows) nodes.
 func (ctrl *Controller) getPoolsForNode(node *corev1.Node) ([]*mcfgv1.MachineConfigPool, error) {
 	pools, metric, err := helpers.GetPoolsForNode(ctrl.mcpLister, node)
 	if err != nil {

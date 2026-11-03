@@ -145,25 +145,33 @@ func GetPoolNamesForNode(mcpLister v1.MachineConfigPoolLister, node *corev1.Node
 	return names, nil
 }
 
-// isWindows checks if given node is a Windows node or a Linux node
+// IsWindows checks if given node is a Windows node.
+//
+// Deprecated: the MCO only manages Linux nodes; use IsNonLinux, which also
+// covers Windows.
 func IsWindows(node *corev1.Node) bool {
-	windowsOsValue := "windows"
-	if value, ok := node.ObjectMeta.Labels[OSLabel]; ok {
-		if value == windowsOsValue {
-			return true
-		}
-		return false
-	}
-	// All the nodes should have a OS label populated by kubelet, if not just to maintain
-	// backwards compatibility, we can returning true here.
-	return false
+	return node.ObjectMeta.Labels[OSLabel] == "windows"
+}
+
+// IsNonLinux reports whether the kubelet identifies node as running an
+// operating system other than Linux (for example Windows or AIX). The MCO
+// only manages Linux nodes: the machine-config-daemon DaemonSet only runs on
+// kubernetes.io/os=linux, so a non-Linux node in a pool could never finish an
+// update. Such nodes are managed by their own operators, such as the Windows
+// Machine Config Operator.
+//
+// A node without the label is treated as Linux, since every supported kubelet
+// sets it and older nodes were Linux.
+func IsNonLinux(node *corev1.Node) bool {
+	value, ok := node.ObjectMeta.Labels[OSLabel]
+	return ok && value != "linux"
 }
 
 func ListPools(node *corev1.Node, mcpLister v1.MachineConfigPoolLister) (*mcfgv1.MachineConfigPool, *mcfgv1.MachineConfigPool, []*mcfgv1.MachineConfigPool, error) {
-	if IsWindows(node) {
-		// This is not an error, is this a Windows Node and it won't be managed by MCO. We're explicitly logging
+	if IsNonLinux(node) {
+		// This is not an error: non-Linux nodes are not managed by the MCO. We're explicitly logging
 		// here at a high level to disambiguate this from other pools = nil  scenario
-		klog.V(4).Infof("Node %v is a windows node so won't be managed by MCO", node.Name)
+		klog.V(4).Infof("Node %v is a %s node so won't be managed by MCO", node.Name, node.Labels[OSLabel])
 		return nil, nil, nil, nil
 	}
 	pl, err := mcpLister.List(labels.Everything())

@@ -329,6 +329,16 @@ func TestGetNodesForPool(t *testing.T) {
 			expected: 0,
 			err:      false,
 		},
+		{
+			// Non-Linux nodes other than Windows (here AIX) are not managed by MCO either,
+			// even when they carry the worker role label
+			pool: helpers.NewMachineConfigPool("worker", nil, helpers.WorkerSelector, machineConfigV0),
+			nodes: append(newMixedNodeSet(2, map[string]string{"node-role/master": ""}, map[string]string{"node-role/worker": ""}),
+				newNodeWithLabels("aixNode", map[string]string{"node-role/worker": "", osLabel: "aix"}),
+				newNodeWithLabels("linuxNode", map[string]string{"node-role/worker": "", osLabel: "linux"})),
+			expected: 3,
+			err:      false,
+		},
 	}
 
 	for idx, test := range tests {
@@ -438,6 +448,14 @@ func TestGetPrimaryPoolForNode(t *testing.T) {
 				helpers.NewMachineConfigPool("worker", nil, helpers.WorkerSelector, machineConfigV0),
 			},
 			nodeLabel: map[string]string{"node-role/master": "", "node-role/worker": "", osLabel: "windows"},
+			expected:  nil,
+			err:       false,
+		}, {
+			// MCP with an AIX worker, it should not be assigned a pool
+			pools: []*mcfgv1.MachineConfigPool{
+				helpers.NewMachineConfigPool("worker", nil, helpers.WorkerSelector, machineConfigV0),
+			},
+			nodeLabel: map[string]string{"node-role/worker": "", osLabel: "aix"},
 			expected:  nil,
 			err:       false,
 		},
