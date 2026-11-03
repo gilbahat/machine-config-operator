@@ -49,9 +49,9 @@ var (
 
 func init() {
 	rootCmd.AddCommand(startCmd)
-	startCmd.PersistentFlags().StringVar(&startOpts.kubeconfig, "kubeconfig", "", "Kubeconfig file to access a remote cluster (testing only)")
+	startCmd.PersistentFlags().StringVar(&startOpts.kubeconfig, "kubeconfig", defaultKubeconfig, kubeconfigFlagUsage)
 	startCmd.PersistentFlags().StringVar(&startOpts.nodeName, "node-name", "", "kubernetes node name daemon is managing.")
-	startCmd.PersistentFlags().StringVar(&startOpts.rootMount, "root-mount", "/rootfs", "where the nodes root filesystem is mounted for chroot and file manipulation.")
+	startCmd.PersistentFlags().StringVar(&startOpts.rootMount, "root-mount", defaultRootMount, "where the nodes root filesystem is mounted for chroot and file manipulation.")
 	startCmd.PersistentFlags().StringVar(&startOpts.hypershiftDesiredConfigMap, "desired-configmap", "", "Runs the daemon for a Hypershift hosted cluster node. Requires a configmap with desired config as input.")
 	startCmd.PersistentFlags().StringVar(&startOpts.onceFrom, "once-from", "", "Runs the daemon once using a provided file path or URL endpoint as its machine config or ignition (.ign) file source")
 	startCmd.PersistentFlags().BoolVar(&startOpts.skipReboot, "skip-reboot", false, "Skips reboot after a sync, applies only in once-from")
@@ -121,24 +121,29 @@ func runStartCmd(_ *cobra.Command, _ []string) {
 		return
 	}
 
-	// Use kubelet kubeconfig file to get the URL to kube-api-server
-	kubeconfig, err := clientcmd.LoadFromFile("/etc/kubernetes/kubeconfig")
-	if err != nil {
-		klog.Fatalf("failed to load kubelet kubeconfig: %v", err)
-	}
-	clusterName := kubeconfig.Contexts[kubeconfig.CurrentContext].Cluster
-	apiURL := kubeconfig.Clusters[clusterName].Server
+	// With an explicit --kubeconfig (always the case on AIX, where the daemon
+	// runs as an SRC subsystem rather than a pod) the API server comes from
+	// that file. Otherwise use the kubelet kubeconfig file to get the URL to
+	// kube-api-server.
+	if startOpts.kubeconfig == "" {
+		kubeconfig, err := clientcmd.LoadFromFile("/etc/kubernetes/kubeconfig")
+		if err != nil {
+			klog.Fatalf("failed to load kubelet kubeconfig: %v", err)
+		}
+		clusterName := kubeconfig.Contexts[kubeconfig.CurrentContext].Cluster
+		apiURL := kubeconfig.Clusters[clusterName].Server
 
-	url, err := url.Parse(apiURL)
-	if err != nil {
-		klog.Fatalf("failed to parse api url from kubelet kubeconfig: %v", err)
-	}
+		url, err := url.Parse(apiURL)
+		if err != nil {
+			klog.Fatalf("failed to parse api url from kubelet kubeconfig: %v", err)
+		}
 
-	// The kubernetes in-cluster functions don't let you override the apiserver
-	// directly; gotta "pass" it via environment vars.
-	klog.Infof("overriding kubernetes api to %s", apiURL)
-	os.Setenv("KUBERNETES_SERVICE_HOST", url.Hostname())
-	os.Setenv("KUBERNETES_SERVICE_PORT", url.Port())
+		// The kubernetes in-cluster functions don't let you override the apiserver
+		// directly; gotta "pass" it via environment vars.
+		klog.Infof("overriding kubernetes api to %s", apiURL)
+		os.Setenv("KUBERNETES_SERVICE_HOST", url.Hostname())
+		os.Setenv("KUBERNETES_SERVICE_PORT", url.Port())
+	}
 
 	cb, err := clients.NewBuilder(startOpts.kubeconfig)
 	if err != nil {
@@ -212,37 +217,46 @@ func runStartCmd(_ *cobra.Command, _ []string) {
 		klog.Fatalf("Failed to initialize: %v", err)
 	}
 
-	// Create CRI client and pinned image set manager before starting informers
-	criClient, err := cri.NewClient(ctx, constants.DefaultCRIOSocketPath)
-	if err != nil {
-		klog.Fatalf("Failed to initialize CRI client: %v", err)
+	// Image pinning drives CRI-O (drop-in config, podman); it is not available
+	// on hosts whose runtime is not CRI-O (AIX nodes run containerd-aix).
+	if hostSupportsPinnedImageSets {
+		// Create CRI client and pinned image set manager before starting informers
+		criClient, err := cri.NewClient(ctx, constants.DefaultCRIOSocketPath)
+		if err != nil {
+			klog.Fatalf("Failed to initialize CRI client: %v", err)
+		}
+		// Allow enough time for large image sets on control-plane nodes (1 worker, 1s throttle per image).
+		prefetchTimeout := 5 * time.Minute
+		pinnedImageSetManager := daemon.NewPinnedImageSetManager(
+			startOpts.nodeName,
+			criClient,
+			ctrlctx.ClientBuilder.MachineConfigClientOrDie(componentName),
+			ctrlctx.InformerFactory.Machineconfiguration().V1().PinnedImageSets(),
+			nodeScopedInformer,
+			ctrlctx.InformerFactory.Machineconfiguration().V1().MachineConfigPools(),
+			resource.MustParse(constants.MinFreeStorageAfterPrefetch),
+			constants.DefaultCRIOSocketPath,
+			constants.KubeletAuthFile,
+			constants.ContainerRegistryConfPath,
+			prefetchTimeout,
+			ctrlctx.FeatureGatesHandler,
+		)
+		go pinnedImageSetManager.Run(2, stopCh)
+	} else {
+		klog.Info("PinnedImageSets are not supported on this host OS; not starting the pinned image set manager")
 	}
-	// Allow enough time for large image sets on control-plane nodes (1 worker, 1s throttle per image).
-	prefetchTimeout := 5 * time.Minute
-	pinnedImageSetManager := daemon.NewPinnedImageSetManager(
-		startOpts.nodeName,
-		criClient,
-		ctrlctx.ClientBuilder.MachineConfigClientOrDie(componentName),
-		ctrlctx.InformerFactory.Machineconfiguration().V1().PinnedImageSets(),
-		nodeScopedInformer,
-		ctrlctx.InformerFactory.Machineconfiguration().V1().MachineConfigPools(),
-		resource.MustParse(constants.MinFreeStorageAfterPrefetch),
-		constants.DefaultCRIOSocketPath,
-		constants.KubeletAuthFile,
-		constants.ContainerRegistryConfPath,
-		prefetchTimeout,
-		ctrlctx.FeatureGatesHandler,
-	)
-	go pinnedImageSetManager.Run(2, stopCh)
 
 	mcnScopedInformer, mcnScopedInformerStartFunc := ctrlcommon.NewScopedMachineConfigNodeInformerFromClientBuilder(cb, startOpts.nodeName)
-	internalReleaseImageManager := internalreleaseimage.New(
-		startOpts.nodeName,
-		ctrlctx.ClientBuilder.MachineConfigClientOrDie(componentName),
-		ctrlctx.InformerFactory.Machineconfiguration().V1().InternalReleaseImages(),
-		mcnScopedInformer,
-	)
-	go internalReleaseImageManager.Run(1, stopCh)
+	// The internal release image registry is hosted on control-plane nodes only.
+	if hostSupportsInternalReleaseImage {
+		internalReleaseImageManager := internalreleaseimage.New(
+			startOpts.nodeName,
+			ctrlctx.ClientBuilder.MachineConfigClientOrDie(componentName),
+			ctrlctx.InformerFactory.Machineconfiguration().V1().InternalReleaseImages(),
+			mcnScopedInformer,
+		)
+		go internalReleaseImageManager.Run(1, stopCh)
+	}
 
 	ctrlctx.KubeInformerFactory.Start(stopCh)
 	ctrlctx.KubeNamespacedInformerFactory.Start(stopCh)

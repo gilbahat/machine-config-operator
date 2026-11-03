@@ -295,7 +295,7 @@ func (dn *Daemon) syncControllerConfigHandler(key string) error {
 	if controllerConfig.Annotations[ctrlcommon.ServiceCARotateAnnotation] == ctrlcommon.ServiceCARotateTrue && oldAnno != controllerConfig.Annotations[ctrlcommon.ServiceCARotateAnnotation] && cmErr == nil && kubeConfigDiff && !allCertsThere && !dn.deferKubeletRestart {
 		if len(onDiskKC.Clusters[0].Cluster.CertificateAuthorityData) > 0 {
 			logSystem("restarting kubelet due to server-ca rotation")
-			if err := runCmdSync("systemctl", "stop", "kubelet"); err != nil {
+			if err := stopService("kubelet"); err != nil {
 				return err
 			}
 			f, err := os.ReadFile("/var/lib/kubelet/kubeconfig")
@@ -323,11 +323,11 @@ func (dn *Daemon) syncControllerConfigHandler(key string) error {
 				return err
 			}
 
-			if err := runCmdSync("systemctl", "daemon-reload"); err != nil {
+			if err := reloadDaemon(); err != nil {
 				return err
 			}
 
-			if err := runCmdSync("systemctl", "start", "kubelet"); err != nil {
+			if err := startService("kubelet"); err != nil {
 				return err
 			}
 		}

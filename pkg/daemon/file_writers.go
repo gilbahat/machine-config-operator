@@ -82,7 +82,7 @@ func createOrigFile(fromPath, fpath string) error {
 	// Only do the check for existing files because files that wasn't present on disk before MCD took over will never
 	// be files that were shipped _with_ the underlying OS (e.g. a default chrony config).
 	if _, err := os.Stat(fpath); err == nil {
-		rpmNotFound, isOwned, err := isFileOwnedByRPMPkg(fpath)
+		rpmNotFound, isOwned, err := isFileOwnedByPackage(fpath)
 		switch {
 		case isOwned:
 			// File is owned by an rpm
@@ -145,8 +145,8 @@ func createOrigFile(fromPath, fpath string) error {
 	if err := os.MkdirAll(filepath.Dir(origFileName(fpath)), 0o755); err != nil {
 		return fmt.Errorf("creating orig parent dir: %w", err)
 	}
-	if out, err := exec.Command("cp", "-a", "--reflink=auto", fromPath, origFileName(fpath)).CombinedOutput(); err != nil {
-		return fmt.Errorf("creating orig file for %q: %s: %w", fpath, string(out), err)
+	if err := copyPreservingAttrs(fromPath, origFileName(fpath)); err != nil {
+		return fmt.Errorf("creating orig file for %q: %w", fpath, err)
 	}
 	return nil
 }

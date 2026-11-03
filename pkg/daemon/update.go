@@ -84,18 +84,6 @@ func getNodeRef(node *corev1.Node) *corev1.ObjectReference {
 	}
 }
 
-func restartService(name string) error {
-	return runCmdSync("systemctl", "restart", name)
-}
-
-func reloadService(name string) error {
-	return runCmdSync("systemctl", "reload", name)
-}
-
-func reloadDaemon() error {
-	return runCmdSync("systemctl", constants.DaemonReloadCommand)
-}
-
 func (dn *Daemon) finishRebootlessUpdate() error {
 	// Get current state of node, in case of an error reboot
 	state, err := dn.getStateAndConfigs()
@@ -223,15 +211,11 @@ func (dn *Daemon) performPostConfigChangeNodeDisruptionAction(postConfigChangeAc
 				// In those cases, directly run the command instead of using the service
 				if serviceName == constants.UpdateCATrustServiceName {
 					logSystem("Error executing %s unit, falling back to command", serviceName)
-					cmd := exec.Command(constants.UpdateCATrustCommand)
-					var stderr bytes.Buffer
-					cmd.Stdout = os.Stdout
-					cmd.Stderr = &stderr
-					if err := cmd.Run(); err != nil {
+					if stderr, err := runUpdateCATrust(); err != nil {
 						if dn.nodeWriter != nil {
 							dn.nodeWriter.Eventf(corev1.EventTypeWarning, "FailedServiceRestart", "%s", fmt.Sprintf("Restarting %s service failed. Error: %v", serviceName, err))
 						}
-						return fmt.Errorf("error running %s: %s: %w", constants.UpdateCATrustCommand, stderr.String(), err)
+						return fmt.Errorf("error running %s: %s: %w", constants.UpdateCATrustCommand, stderr, err)
 					}
 				} else {
 					if dn.nodeWriter != nil {
@@ -351,12 +335,8 @@ func (dn *Daemon) performPostConfigChangeAction(postConfigChangeActions []string
 	}
 
 	if ctrlcommon.InSlice(postConfigChangeActionRestartCrio, postConfigChangeActions) {
-		cmd := exec.Command(constants.UpdateCATrustCommand)
-		var stderr bytes.Buffer
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("error running %s: %s: %w", constants.UpdateCATrustCommand, string(stderr.Bytes()), err)
+		if stderr, err := runUpdateCATrust(); err != nil {
+			return fmt.Errorf("error running %s: %s: %w", constants.UpdateCATrustCommand, stderr, err)
 		}
 
 		serviceName := constants.CRIOServiceName
@@ -1534,6 +1514,15 @@ func (mcDiff *machineConfigDiff) osChangesString() string {
 
 // newMachineConfigDiff compares two MachineConfig objects.
 func newMachineConfigDiff(oldConfig, newConfig *mcfgv1.MachineConfig) (*machineConfigDiff, error) {
+	diff, err := computeMachineConfigDiff(oldConfig, newConfig)
+	if err != nil {
+		return nil, err
+	}
+	adjustDiffForHost(diff)
+	return diff, nil
+}
+
+func computeMachineConfigDiff(oldConfig, newConfig *mcfgv1.MachineConfig) (*machineConfigDiff, error) {
 	oldIgn, err := ctrlcommon.ParseAndConvertConfig(oldConfig.Spec.Config.Raw)
 	if err != nil {
 		return nil, fmt.Errorf("parsing old Ignition config failed with error: %w", err)
@@ -1594,6 +1583,11 @@ func newMachineConfigDiff(oldConfig, newConfig *mcfgv1.MachineConfig) (*machineC
 func reconcilable(oldConfig, newConfig *mcfgv1.MachineConfig, overrides *opv1.IrreconcilableValidationOverrides) (*machineConfigDiff, error) {
 	if err := ctrlcommon.IsRenderedConfigReconcilable(oldConfig, newConfig, overrides); err != nil {
 		return nil, fmt.Errorf("configs %s, %s are not reconcilable: %w", oldConfig.Name, newConfig.Name, err)
+	}
+
+	// Reject content the host OS cannot apply (a no-op except on AIX).
+	if err := validateMachineConfigForHost(newConfig); err != nil {
+		return nil, err
 	}
 
 	// FIPS section
@@ -2107,8 +2101,8 @@ func (dn *Daemon) updateFiles(oldIgnConfig, newIgnConfig ign3types.Config, added
 }
 
 func restorePath(path string) error {
-	if out, err := exec.Command("cp", "-a", "--reflink=auto", origFileName(path), path).CombinedOutput(); err != nil {
-		return fmt.Errorf("restoring %q from orig file %q: %s: %w", path, origFileName(path), string(out), err)
+	if err := copyPreservingAttrs(origFileName(path), path); err != nil {
+		return fmt.Errorf("restoring %q from orig file %q: %w", path, origFileName(path), err)
 	}
 	if err := os.Remove(origFileName(path)); err != nil {
 		return fmt.Errorf("deleting orig file %q: %w", origFileName(path), err)
@@ -2199,7 +2193,7 @@ func (dn *Daemon) deleteStaleData(oldIgnConfig, newIgnConfig ign3types.Config) e
 			// and no rpm is claiming it, we assume that the orig file came from a wrongful backup of a MachineConfig
 			// file instead of a file originally on disk. See https://bugzilla.redhat.com/show_bug.cgi?id=1814397
 			restore := false
-			rpmNotFound, isOwned, err := isFileOwnedByRPMPkg(f.Path)
+			rpmNotFound, isOwned, err := isFileOwnedByPackage(f.Path)
 			switch {
 			case isOwned:
 				// File is owned by an rpm
@@ -2420,6 +2414,9 @@ func (dn *Daemon) presetUnit(unit ign3types.Unit) error {
 
 // writeUnits writes the systemd units to disk
 func (dn *Daemon) writeUnits(units []ign3types.Unit) error {
+	if len(units) == 0 {
+		return nil
+	}
 	var enabledUnits []string
 	var disabledUnits []string
 
@@ -2519,9 +2516,7 @@ func (dn *Daemon) writeFiles(files []ign3types.File, skipCertificateWrite bool) 
 // Ensures that both the SSH root directory (/home/core/.ssh) as well as any
 // subdirectories are created with the correct (0700) permissions.
 func createSSHKeyDir(authKeyDir string) error {
-	mkdir := func(dir string) error {
-		return exec.Command("runuser", "-u", constants.CoreUserName, "--", "mkdir", "-m", "0700", "-p", dir).Run()
-	}
+	mkdir := mkdirAsCoreUser
 
 	// Create the root SSH key directory (/home/core/.ssh) first (if it does not exist).
 	// This must be a separate mkdir call: "mkdir -m 0700 -p" only applies the mode
@@ -2588,18 +2583,6 @@ func (dn *Daemon) atomicallyWriteSSHKey(authKeyPath, keys string) error {
 	return nil
 }
 
-func getUserPasswordHash(user string) (string, error) {
-	shadowOut, err := exec.Command("getent", "shadow", user).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to check password hash for %s: %w", user, err)
-	}
-	shadowSlice := strings.SplitN(strings.TrimSpace(string(shadowOut)), ":", 3)
-	if len(shadowSlice) >= 2 {
-		return shadowSlice[1], nil
-	}
-	return "", nil
-}
-
 // SetPasswordHash updates the password for each user in newUsers, skipping
 // users whose password already matches the desired configuration.
 func (dn *Daemon) SetPasswordHash(newUsers, oldUsers []ign3types.PasswdUser) error {
@@ -2635,8 +2618,8 @@ func (dn *Daemon) SetPasswordHash(newUsers, oldUsers []ign3types.PasswdUser) err
 			continue
 		}
 
-		if out, err := exec.Command("usermod", "-p", pwhash, u.Name).CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to reset password for %s: %s:%w", u.Name, out, err)
+		if err := setUserPasswordHash(u.Name, pwhash); err != nil {
+			return fmt.Errorf("failed to reset password for %s: %w", u.Name, err)
 		}
 		klog.Info("Password has been configured")
 	}
@@ -2656,6 +2639,10 @@ func (dn *Daemon) updateKubeConfigPermission() error {
 			return fmt.Errorf("failed to reset permission for %s:%w", kubeConfigPath, err)
 		}
 	} else {
+		if os.IsNotExist(err) && !kubeletKubeconfigRequired {
+			klog.Infof("%s does not exist (no kubelet on this host yet); skipping", kubeConfigPath)
+			return nil
+		}
 		return fmt.Errorf("cannot stat %s: %w", kubeConfigPath, err)
 	}
 	return nil
@@ -2690,7 +2677,7 @@ func (dn *Daemon) updateSSHKeys(newUsers, oldUsers []ign3types.PasswdUser) error
 
 	if !dn.mock {
 		// Note we write keys only for the core user and so this ignores the user list
-		return dn.atomicallyWriteSSHKey(constants.RHCOSDefaultSSHKeyPath, concatSSHKeys)
+		return dn.atomicallyWriteSSHKey(hostSSHKeyPath, concatSSHKeys)
 	}
 
 	return nil
@@ -2716,11 +2703,11 @@ func isUserPresent(user ign3types.PasswdUser, userList []ign3types.PasswdUser) b
 
 func deconfigureUser(user ign3types.PasswdUser) error {
 	// clear out password
-	pwhash := ""
+	pwhash := deconfiguredPasswordHash
 	user.PasswordHash = &pwhash
 
-	if out, err := exec.Command("usermod", "-p", *user.PasswordHash, user.Name).CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to change password for %s: %s:%w", user.Name, out, err)
+	if err := setUserPasswordHash(user.Name, *user.PasswordHash); err != nil {
+		return fmt.Errorf("failed to change password for %s: %w", user.Name, err)
 	}
 	return nil
 }
@@ -3298,13 +3285,7 @@ func logSystem(format string, a ...interface{}) {
 	// we can just talk to the journald socket.  Doing this as a
 	// subprocess rather than talking to journald in process since
 	// I worry about the golang library having a connection pre-chroot.
-	logger := exec.Command("logger")
-
-	var log bytes.Buffer
-	log.WriteString(fmt.Sprintf("machine-config-daemon[%d]: %s", os.Getpid(), message))
-
-	logger.Stdin = &log
-	if err := logger.Run(); err != nil {
+	if err := writeSystemLog(fmt.Sprintf("machine-config-daemon[%d]: %s", os.Getpid(), message)); err != nil {
 		klog.Errorf("failed to invoke logger: %v", err)
 	}
 }
