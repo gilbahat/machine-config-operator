@@ -47,6 +47,11 @@ clean:
 _build-component-%:
 	WHAT_PATH=cmd/$* WHAT=$(basename $*) GOTAGS=$(GOTAGS) hack/build-go.sh
 
+# Cross-compile machine-config-daemon for AIX nodes. See docs/aix.md.
+machine-config-daemon-aix:
+	hack/aix/build.sh
+.PHONY: machine-config-daemon-aix
+
 # Build the helpers under devex/cmd.
 _build-helper-%:
 	WHAT_PATH=devex/cmd/$* WHAT=$(basename $*) GOTAGS=$(GOTAGS) hack/build-go.sh

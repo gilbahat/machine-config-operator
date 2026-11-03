@@ -1,0 +1,51 @@
+# Example MachineConfigs for the aix pool. Files, the core user's SSH keys
+# and password hash are supported; see docs/aix.md for what is not.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 50-aix-ssh-banner
+  labels:
+    machineconfiguration.openshift.io/role: aix
+spec:
+  config:
+    ignition:
+      version: 3.5.0
+    storage:
+      files:
+      - path: /etc/ssh/aix-banner
+        mode: 0644
+        overwrite: true
+        contents:
+          # "Managed by the OpenShift Machine Config Operator\n"
+          source: data:,Managed%20by%20the%20OpenShift%20Machine%20Config%20Operator%0A
+---
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 60-aix-core-ssh
+  labels:
+    machineconfiguration.openshift.io/role: aix
+spec:
+  config:
+    ignition:
+      version: 3.5.0
+    passwd:
+      users:
+      - name: core
+        sshAuthorizedKeys:
+        - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExample admin@example
+---
+# Apply the banner without a reboot: reload sshd (SRC subsystem "sshd")
+# when the file changes. Merge this into the cluster MachineConfiguration.
+apiVersion: operator.openshift.io/v1
+kind: MachineConfiguration
+metadata:
+  name: cluster
+spec:
+  nodeDisruptionPolicy:
+    files:
+    - path: /etc/ssh/aix-banner
+      actions:
+      - type: Reload
+        reload:
+          serviceName: sshd.service

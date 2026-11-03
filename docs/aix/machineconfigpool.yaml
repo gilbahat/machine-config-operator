@@ -1,0 +1,28 @@
+# MachineConfigPool for AIX nodes.
+#
+# AIX nodes carry node-role.kubernetes.io/aix and NOT node-role.kubernetes.io/worker,
+# so they render only MachineConfigs labelled role=aix and never inherit the
+# RHCOS worker configs (systemd units, CRI-O config, kernel arguments, ...).
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: aix
+spec:
+  machineConfigSelector:
+    matchLabels:
+      machineconfiguration.openshift.io/role: aix
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/aix: ""
+---
+# A pool must select at least one MachineConfig; this one is empty.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 00-aix-base
+  labels:
+    machineconfiguration.openshift.io/role: aix
+spec:
+  config:
+    ignition:
+      version: 3.5.0
